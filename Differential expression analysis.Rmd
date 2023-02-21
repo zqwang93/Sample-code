@@ -1,0 +1,137 @@
+---
+title: "DE_example_LineC"
+author: "ziqing wang"
+date: "10/05/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(edgeR)
+library(DESeq2)
+library(ggfortify)
+library(caret)
+```
+
+### Input data for edgeR
+```{r}
+# Set working directory to the folder containing htseq count data
+setwd("~/Desktop/LineC/LineC_count") 
+
+# Create a variable "files" that contains all the names of the count data
+files <- grep(".txt", list.files("~/Desktop/LineC/LineC_count"), value = TRUE) 
+
+# Load each sample individually
+# This 'for' loop reads all the txt file into separate data.frame with name being the sample name, 51_trim.txt -> 51 
+for (i in c(1:11)) {
+  assign(sprintf(substr(files[i],4,5),i), read.table(files[i],sep='\t',header=FALSE))  }
+
+# This code generates a single data.frame called geneCounts containing all samples. In the case of number being a data.frame, it has to be called by ``.
+geneCounts = data.frame(lapply(list(`51`,`52`,`53`,`55`,`56`,`57`,`59`,`62`,`63`,`64`,`66`),function(x) x[,2]))
+
+geneCounts$gene_id = `51`[,1] # Create a column named gene_id
+sizeGeneCounts = dim(geneCounts) # Retrieve the dimention of the data.frame 
+geneCounts = geneCounts[1:(sizeGeneCounts[1]-5),] # Remove last 5 rows 
+# Set first 11 column names 
+colnames(geneCounts)[1:11] = paste("C",substr(files,4,5),sep = "")
+# Save geneCounts as csv data for future use
+write.csv(geneCounts,'~/Desktop/LineC/htseq_tr.csv',row.names = F )
+```
+
+### edgeR
+
+```{r}
+# Input data
+exp=read.csv('~/desktop/Metabolomics/sample_updated.csv') # data containing WB status
+#exp2=read.table('~/desktop/Metabolomics/exp.txt', header = TRUE, sep = "", dec = ".")
+rna=read.csv('~/Desktop/LineC/htseq_tr.csv')
+
+row.names(rna)=rna[,12] # make column 12 (gene) as row names
+rna=rna[,-12] # remove column 12
+
+exp=subset(exp,exp$Sample%in%colnames(rna)) # Make exp and rna consistent in samples
+exp=exp[order(exp$Sample),] # Order the data.frame exp by vcolumn Sample
+row.names(exp)=c(1:11) # Make row names by numerical order
+exp$SAMPLE_STATUS=factor(exp$SAMPLE_STATUS) # Make the column SAMPLE_STATUS to be factor
+
+# Create Design matrix
+design <- model.matrix(~0+SAMPLE_STATUS,data=exp) 
+colnames(design) <- levels(exp$SAMPLE_STATUS)
+design
+
+dge <- DGEList(counts=rna) # Create DGEList object for edgeR
+
+# Filtering genes with low counts
+keep <- filterByExpr(dge, design) 
+dge <- dge[keep,,keep.lib.sizes=FALSE]
+
+# TMM normalization
+y <- calcNormFactors(dge, method="TMM") 
+
+# Estimate dispersion 
+y <- estimateDisp(y, design)
+
+# Testing for DE genes
+fit <- glmFit(y, design) # Fit the negative binomial model
+AvsU = makeContrasts(Affected-Unaffected, levels=design) # Make Unaffected as reference level
+res = glmLRT(fit, contrast=AvsU) # likelihood ratio test 
+g=as.data.frame(topTags(res,sort.by = "PValue",n=Inf)) # extract test results
+sum(g$FDR<0.05) # see number of DE genes
+g=as.data.frame(topTags(res,sort.by = "PValue",n=sum(g$FDR<0.05))) # extract only DE genes
+
+# You can save the results with write.csv()
+#write.csv(g,'~/desktop/LineC/edgeR.csv')
+```
+
+### Deseq2
+
+```{r,include=FALSE}
+# Input from HTSeq results
+# dir should be the directory where the data is 
+dir="~/Desktop/LineC/LineC_count" 
+sampleFiles <- grep("HM",list.files(dir),value=TRUE) # Search for files containing WB
+exp=read.csv('~/desktop/Metabolomics/sample_updated.csv')
+exp=subset(exp,exp$Sample%in%paste('C',substr(sampleFiles,4,5),sep=''))
+exp=exp[order(exp$Sample),]
+sampleCondition <- exp$SAMPLE_STATUS
+sampleTable <- data.frame(sampleName = sampleFiles,fileName = sampleFiles,condition = as.factor(sampleCondition)) 
+dds <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable,directory = dir,design= ~condition) # Construct the data object used by Deseq2
+
+# Filtering low count genes
+keep <- rowSums(counts(dds)) >= 5
+dds <- dds[keep,]
+
+# Make Unaffected as reference level
+dds$condition <- relevel(dds$condition, ref = "Unaffected")
+
+# Differential expression analysis
+dds <- DESeq(dds,test = 'LRT',reduced = ~ 1) # likelihood ratio test
+res <- results(dds, alpha=0.05) # extract results
+summary(res) # see summary of the DE results
+sum(res$padj < 0.05, na.rm=TRUE) # number of total DE genes
+g2=as.data.frame(res[which(res$padj < 0.05),]) # extract only DE genes
+
+# write results to csv
+#write.csv(g2,'~/desktop/LineC/deseq.csv')
+```
+
+### Principal component analysis (PCA) 
+
+PCA can be used to determine the grouping of samples. 
+
+```{r}
+exp2=read.csv('~/desktop/Metabolomics/sample.csv')
+exp2=subset(exp2,exp2$Sample%in%exp$Sample)
+exp2=exp2[order(exp2$Sample),]
+rna=read.csv('~/desktop/LineC/htseq_tr.csv')
+row.names(rna)=rna[,12] # set gene as row names
+rna=rna[,-12] # delete gene column
+r2=as.data.frame(t(rna)) # make gene counts to columns and sample to rows
+pca=prcomp(r2,center=F,scale=F) # pca analysis
+res=summary(pca)
+scr=as.data.frame(res$x) # get principal components
+data=scr[,1:3]
+data=cbind(data,Group=exp2$SAMPLE_STATUS,X=exp2$Sample)
+autoplot(pca, data = data, colour ='Group',label=T)
+```
+
