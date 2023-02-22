@@ -1,0 +1,275 @@
+---
+title: "WGCNA"
+author: "ziqing wang"
+date: "1/14/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(WGCNA)
+library(corrplot)
+library(flashClust)
+library(knitr)
+library(ggfortify)
+library(biomaRt)
+library(dplyr)
+```
+
+## Data Processing
+
+Transcriptomic data:
+```{r}
+# Transcripts per million (TPM)
+tpm3 <- function(counts,len) {
+  x <- counts/len
+  return(t(t(x)*1e6/colSums(x)))
+}
+
+# Get raw count
+rna=read.csv('~/desktop/Metabolomics/Line C11/htseq_tr.csv') # Get RNA-seq raw counts
+row.names(rna)=rna$gene_id
+rna=rna[,-12] # remove column gene_id
+counts=as.matrix(rna)
+
+# "listDatasets" function returns the list of all the species available  
+ensembl = useEnsembl(biomart="ensembl")
+spec=listDatasets(ensembl)
+
+# Prepare feature length
+ens_build = "apr2018"
+dataset="ggallus_gene_ensembl"
+mart = biomaRt::useMart("ENSEMBL_MART_ENSEMBL", dataset = dataset, 
+                        host = paste0(ens_build, ".archive.ensembl.org"), path = "/biomart/martservice", archive = FALSE)
+gene.annotations <- biomaRt::getBM(mart = mart, attributes=c("ensembl_gene_id", "external_gene_name", "start_position", "end_position"))
+gene.annotations <- dplyr::transmute(gene.annotations, external_gene_name,  ensembl_gene_id, length = end_position - start_position)
+
+# Filter and re-order gene.annotations to match the order in feature counts matrix
+gene.annotations <- gene.annotations %>% dplyr::filter(ensembl_gene_id %in% rownames(counts))
+gene.annotations <- gene.annotations[order(match(gene.annotations$ensembl_gene_id, rownames(counts))),]
+
+# Assign feature lenghts into a numeric vector 
+sum(gene.annotations$ensembl_gene_id%in%row.names(rna))
+rna2=rna[which(row.names(rna)%in%gene.annotations$ensembl_gene_id),]
+sum(row.names(rna2)==gene.annotations$ensembl_gene_id)
+featureLength <- gene.annotations$length
+tpm=tpm3(rna2,featureLength)
+
+# Filter out genes with < 0.1 TPM
+gtpm=apply(tpm,1,function(x) length(which(x>0.1)))
+g=as.data.frame(gtpm[gtpm>1])
+tpm2=tpm[which(row.names(tpm)%in%row.names(g)),] # 12999 genes left
+
+# Filter by Interquartile Range
+a=apply(tpm2,1,IQR)
+tpm3=tpm2[a > quantile(a, 0.25), ] # 9749 genes left
+```
+
+Metabolomic data and construct a combined dataset from both:
+```{r}
+r=as.data.frame(t(tpm3))
+mname=read.csv('~/desktop/Metabolomics/name282.csv')
+minfo=read.csv('~/desktop/Metabolomics/Met_C16_simp.csv')
+minfo=merge(minfo,mname,by='BIOCHEMICAL')
+met=read.csv('~/desktop/Metabolomics/Met11n_na80.csv')
+minfo=subset(minfo,minfo$Met%in%colnames(met))
+m=read.csv('~/desktop/Metabolomics/Met_C16_simp.csv')
+m=merge(m,minfo[,c(1,21)],by='BIOCHEMICAL')
+row.names(m)=m$Met
+m2=m[,which(colnames(m)%in%row.names(r)[1:11])]
+d2=as.data.frame(t(m2))
+d2[,1:275]=lapply(d2[,1:275], function(x) gsub(",", "", x))
+d2[,1:275]=lapply(d2[,1:275], as.numeric)
+
+# NA imputation by minimum value
+d=d2
+for (i in 1:275){
+  vmin<-min(d[, i], na.rm=TRUE)
+  d[is.na(d[, i]),i]<-vmin
+}
+d$sample=row.names(d)
+r$sample=row.names(r)
+cdata=merge(d,r,by='sample')
+row.names(cdata)=cdata$sample
+cdata=cdata[,-1]
+```
+
+Variance stabilization:
+```{r}
+# Log2(x+1) transformation
+for (i in 1:10024){
+  for (j in 1:11){
+    if (is.nan(cdata[j,i]) == FALSE){
+      cdata[j,i] <- log(cdata[j,i]+1,2)
+    }
+  }
+}
+
+# z-score transformation
+for (i in 1:10024){
+  vmean<-mean(cdata[,i], na.rm = TRUE)
+  vstd <- sd(cdata[,i], na.rm = TRUE)
+  cdata[,i]<-(cdata[,i]-vmean) / vstd
+}
+
+# Save data
+#write.csv(cdata,'~/Metabolomics/cdata.csv')
+```
+
+## Perform WGCNA 
+
+Network construction: 
+```{r}
+data=read.csv('~/Metabolomics/cdata.csv')
+row.names(data)=data$X
+data=data[,-1]
+
+# Check outliers
+x=data
+gsg = goodSamplesGenes(x, verbose = 3)
+gsg$allOK # If TRUE, move on
+
+# Trait data
+exp=read.csv('~/desktop/Metabolomics/sample.csv')
+exp=subset(exp,exp$Sample%in%row.names(x))
+exp=exp[order(exp$Sample),]
+exp$SAMPLE_STATUS[1]='Affected'
+
+# Form a data frame analogous to expression data that will hold the clinical traits.
+rownames(exp) = exp$Sample
+exp$SAMPLE_STATUS=ifelse(exp$SAMPLE_STATUS=='Affected',1,0)
+exp$Sample = NULL
+exp$LINE=NULL
+#table(rownames(exp)==rownames(x)) # Make sure sample order are aligned 
+
+# Choose a soft threshold power
+powers = c(c(1:30)) #choosing a set of soft-thresholding powers
+#allowWGCNAThreads()
+sft = pickSoftThreshold(x, powerVector=powers, verbose =3, networkType="unsigned") # call network topology analysis function
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], xlab= "Soft Threshold (power)", ylab="Scale Free Topology Model Fit, signed R^2", type= "n", main= paste("Scale independence"))
+cex1=0.8
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2], labels=powers, cex=cex1, col="red")
+abline(h=0.80, col="red")
+par(mfrow=c(1,1))
+plot(sft$fitIndices[,1], sft$fitIndices[,5], xlab= "Soft Threshold (power)", ylab="Mean Connectivity", type="n", main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1, col="red")
+
+# Build adjacency matrix
+enableWGCNAThreads()
+softPower = 9 # 9 due to limited sample size, based on recommendations by developer 
+adjacency = adjacency(x, power = softPower, type = "unsigned") #specify network type
+
+# Construct Networks
+TOM = TOMsimilarity(adjacency, TOMType="unsigned") # Unsigned because both positive and negative correlations between features are considered
+dissTOM = 1-TOM
+
+# Generate a clustered gene tree
+geneTree = flashClust(as.dist(dissTOM), method="average")
+minModuleSize = 20 # This sets the minimum number of genes to cluster into a module
+dynamicMods = cutreeDynamic(dendro= geneTree, distM= dissTOM, deepSplit=3, pamRespectsDendro= FALSE, minClusterSize = minModuleSize)
+dynamicColors= labels2colors(dynamicMods)
+MEDissThres = 0.15 # set a threhold for merging modules. threshold of 0.15, corresponding to correlation of 0.85
+merge = mergeCloseModules(x, dynamicColors, cutHeight= MEDissThres, verbose =3)
+mergedColors = merge$colors
+mergedMEs = merge$newMEs
+# Plot dendrogram:
+moduleColors = mergedColors
+colorOrder = c("grey", standardColors(50))
+moduleLabels = match(moduleColors, colorOrder)-1
+MEs = mergedMEs
+plotDendroAndColors(geneTree, cbind(mergedColors),
+                    c("Module colors"),
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = TRUE, guideHang = 0.05, cex.lab=1.2)
+```
+
+## Correlation with wooden breast
+
+```{r}
+# Define number of genes and samples
+nFeature = ncol(x)
+nSamples = nrow(x)
+
+# Recalculate MEs with color labels
+MEs0 = moduleEigengenes(x, moduleColors)$eigengenes # eigenvector
+MEs = orderMEs(MEs0)
+moduleTraitCor = cor(MEs, exp, use= "p")
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples)
+
+# Module selection - correlation with WB trait -> FDR
+m2=data.frame(moduleTraitCor,moduleTraitPvalue)
+colnames(m2)=c('cor','pval')
+m2$p_fdr=p.adjust(m2$pval,method='fdr')
+msig2=subset(m2,p_fdr<0.05)
+
+# Pull out genes belonging to a certain module
+msig2=msig2[order(abs(msig2$cor),decreasing = T),]
+row.names(msig2)=gsub(".*E", "", row.names(msig2))
+kable(msig2[,c(1,3)])
+modNames = substring(names(MEs), 3)
+geneModuleMembership = as.data.frame(cor(x, MEs, use = "p"))
+geneTraitSignificance = as.data.frame(cor(x, exp$SAMPLE_STATUS, use = "p"))
+t2=data.frame(feature=NA,MM=NA,GS=NA,module=NA)
+for ( i in 1:nrow(msig2)){
+  module = row.names(msig2)[i]
+  column = match(module, modNames)
+  moduleGenes = moduleColors==module
+  tr=data.frame(feature=names(x)[moduleColors==module])
+  tr$MM=geneModuleMembership[moduleGenes, column]
+  tr$GS=geneTraitSignificance[moduleGenes, 1]
+  tr$module=module
+  t2=rbind(t2,tr)
+}
+
+t2=t2[-1,]
+colnames(MEs)=substring(colnames(MEs),3)
+eigenv=MEs[,colnames(MEs)%in%t2$module]
+colnames(minfo)[21]='feature'
+t3=merge(t2,minfo[,c(1,4,21)],by='feature',all.x=T)
+t4=t3[order(t3$module),]
+colnames(t4)[5]='Name'
+t4[is.na(t4)]=''
+```
+
+## Visualization:
+
+```{r}
+# Eigengenes and trait
+MEs = moduleEigengenes(x, moduleColors)$eigengenes
+WB = as.data.frame(exp$SAMPLE_STATUS);
+names(WB) = "WB"
+MET = orderMEs(cbind(MEs, WB))
+
+# Plot the relationships among the eigengenes and WB
+plotEigengeneNetworks(MEs, "", marDendro = c(0,4,1,2), marHeatmap = c(3,4,1,2), cex.lab = 1)
+
+# Plot module trait relationships
+textMatrix= paste(signif(moduleTraitCor, 2))
+dim(textMatrix)= dim(moduleTraitCor)
+labeledHeatmap(Matrix= moduleTraitCor,
+               xLabels= 'WB Status',
+               yLabels= names(MEs),
+               ySymbols= names(MEs),
+               colorLabels= FALSE,
+               colors= blueWhiteRed(50),
+               textMatrix= textMatrix,
+               setStdMargins= T,
+               cex.text= 0.4,
+               zlim= c(-1,1),cex.lab.y=0.7, main= paste("Module-trait relationships"))
+
+# Plot module membership vs gene significance
+module = "lightyellow"
+column = match(module, modNames)
+moduleGenes = moduleColors==module;
+verboseScatterplot(abs(geneModuleMembership[moduleGenes, column]), 
+                   abs(geneTraitSignificance[moduleGenes, 1]), 
+                   xlab = paste("Module Membership in", module), 
+                   ylab = "Gene significance for WB", 
+                   main = paste("Module membership vs. gene significance\n"), 
+                   col = 'yellow',cex.main = 1.2, cex.lab = 1.2, cex.axis = 1.2, )
+```
+
+
+
+
+
