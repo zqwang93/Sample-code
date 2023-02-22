@@ -1,0 +1,19 @@
+#!/bin/bash
+#SBATCH --job-name=fastqc
+#SBATCH --chdir=/mnt/chicken/wzqing/RNAseq/data
+#SBATCH --mem=64000
+#SBATCH -c 16
+
+#JOB LOG HEADER
+perl -E 'say"="x80'; echo "JOB STARTED: `date`"; echo "NODE: `hostname`"; echo "SCRIPT ${0}:"; cat $0; perl -E 'say"="x80'
+
+
+#SOFTWARE REQUIREMENTS
+export PATH=$PATH:/usr/local/FastQC
+
+# COMMAND(s) TO RUN
+find . -name "*.fastq.gz" | parallel fastqc {} -o /mnt/chicken/wzqing/RNAseq/fastqc
+
+#JOB LOG FOOTER
+perl -E 'say"="x80'; echo "JOB COMPLETED: `date`"; perl -E 'say"="x80'
+

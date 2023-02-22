@@ -1,0 +1,37 @@
+#!/bin/bash
+#SBATCH --job-name=ctRna
+#SBATCH --chdir=/mnt/chicken/wzqing/RNAseq/sortdata
+#SBATCH --mem=32000
+#SBATCH -c 1
+
+# JOB LOG HEADER
+perl -E 'say"="x80'; echo "JOB STARTED: `date`"; echo "NODE: `hostname`"; echo "SCRIPT ${0}:"; cat $0; perl -E 'say"="x80'
+
+
+# VARIABLES
+# Input directory
+INDIR=/mnt/chicken/wzqing/RNAseq/sortdata                           
+# Annotation GIF file for genome
+GFF=/mnt/chicken/wzqing/chicken_genome/GRCg6a_95/Gallus_gallus.GRCg6a.95.gtf
+# Output directory
+OUTDIR=/mnt/chicken/wzqing/RNAseq/ctdata                       
+
+# COMMAND(s) TO RUN
+# Loop to get counts from each .bam file in Input directory 
+for i in `ls -1 ${INDIR}/*.bam`
+do
+   echo "PROCESSING FILE: ${i}"
+   PREFIX=`basename -s ".bam" ${i}`
+   htseq-count \
+      --stranded reverse \
+      --format bam \
+      --type exon \
+      --idattr gene_id \
+      ${i} \
+      ${GFF} \
+      > ${OUTDIR}/${PREFIX}.count.txt
+done
+
+
+#JOB LOG FOOTER
+perl -E 'say"="x80'; echo "JOB COMPLETED: `date`"; perl -E 'say"="x80'

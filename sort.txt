@@ -1,0 +1,16 @@
+#!/bin/bash
+#SBATCH --job-name=bamindex
+#SBATCH --chdir=/mnt/chicken/wzqing/RNAseq/mapdata
+#SBATCH --mem=64000
+#SBATCH -c 16
+
+#JOB LOG HEADER
+perl -E 'say"="x80'; echo "JOB STARTED: `date`"; echo "NODE: `hostname`"; echo "SCRIPT ${0}:"; cat $0; perl -E 'say"="x80'
+
+
+# COMMAND(s) TO RUN
+
+ls *.sam | parallel "samtools view -b -S {} | samtools sort -o {.}.bam ; samtools index {.}.bam"
+
+#JOB LOG FOOTER
+perl -E 'say"="x80'; echo "JOB COMPLETED: `date`"; perl -E 'say"="x80'

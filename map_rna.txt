@@ -1,0 +1,27 @@
+#!/bin/bash
+#SBATCH --job-name=mapping
+#SBATCH --chdir=/mnt/chicken/wzqing/RNAseq/data
+#SBATCH --mem=64000
+#SBATCH -c 32
+
+#JOB LOG HEADER
+perl -E 'say"="x80'; echo "JOB STARTED: `date`"; echo "NODE: `hostname`"; echo "SCRIPT ${0}:"; cat $0; perl -E 'say"="x80'
+
+
+# SOFTWARE REQUIREMENTS
+export PATH=$PATH:/usr/local/hisat2
+
+# COMMAND(s) TO RUN
+OUT="/mnt/chicken/wzqing/RNAseq/mapdata"
+total_files=`find -name '*.fastq' | wc -l`
+arr=( $(ls *.fastq) )
+
+for ((i=0; i<$total_files; i+=8))
+{ 
+sample_name=`echo ${arr[$i]} | awk -F "_L00" '{print $1}'`     # Call and set sample name
+
+hisat2 -p ${SLURM_CPUS_PER_TASK} -x /mnt/chicken/chicken_genome/GRCg6a_95/index_GRCg6a_95/index_GRCg6a_95_tran -1 ${arr[$i]},${arr[$i+2]},${arr[$i+4]},${arr[$i+6]} -2 ${arr[$i+1]},${arr[$i+3]},${arr[$i+5]},${arr[$i+7]} --no-mixed --no-discordant --rna-strandness RF -S $OUT/$sample_name.sam 
+}
+
+#JOB LOG FOOTER
+perl -E 'say"="x80'; echo "JOB COMPLETED: `date`"; perl -E 'say"="x80'
